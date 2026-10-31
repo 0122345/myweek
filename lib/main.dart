@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
-import 'week.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'auth_gate.dart';
 
-void main() {
+Future<void> main() async{
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   runApp(const MyApp());
 }
 
@@ -13,7 +16,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Weekly Schedule app',
       theme: ThemeData(colorScheme: .fromSeed(seedColor: Colors.deepPurple)),
-      home: const WeekScreen(),
+      home: const AuthGate(),
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart' show FirebaseException;
 import 'package:progressive_time_picker/progressive_time_picker.dart'
     show
         PickedTime,
@@ -12,13 +13,11 @@ import 'course.dart';
 class CourseForm extends StatefulWidget {
   final Course? course;  
   final int initialDay;
-  final int newId;
 
   const CourseForm({
     super.key,
     this.course,
     required this.initialDay,
-    required this.newId,
   });
 
   @override
@@ -31,6 +30,7 @@ class _CourseFormState extends State<CourseForm> {
   late final TextEditingController _start;
   late final TextEditingController _end;
   late int _day;
+  bool _busy = false;
 
   bool get _editing => widget.course != null;
 
@@ -83,19 +83,32 @@ class _CourseFormState extends State<CourseForm> {
     return null;
   }
 
-  void _save() {
+ Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
-    Navigator.pop(
-      context,
-      Course(
-        id: widget.course?.id ?? widget.newId,
-        name: _name.text.trim(),
-        day: _day,
-        start: parseTime(_start.text)!,
-        end: parseTime(_end.text)!,
-      ),
+    setState(() => _busy = true);
+    final course = Course(
+      id: widget.course?.id ?? '',
+      name: _name.text.trim(),
+      day: _day,
+      start: parseTime(_start.text)!,
+      end: parseTime(_end.text)!,
     );
+    try {
+      if (_editing) {
+        await myCourses().doc(course.id).update(course.toMap());
+      } else {
+        await myCourses().add(course.toMap());
+      }
+      if (mounted) Navigator.pop(context, course.day);
+    } on FirebaseException catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save: ${e.code}')),
+      );
+    }
   }
+
 
   Widget _clock(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;

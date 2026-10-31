@@ -1,15 +1,18 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+
 const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const dayShort = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
 class Course {
-  final int id;
+  final String id;
   final String name;
   final int day;  
   final int start;  
   final int end; // minutes since midnight
 
   const Course({
-    required this.id,
+    this.id = '',
     required this.name,
     required this.day,
     required this.start,
@@ -17,6 +20,24 @@ class Course {
   });
 
   int get duration => end - start;
+  Map<String, dynamic> toMap() => {
+        'name': name,
+        'day': day,
+        'start': start,
+        'end': end,
+      };
+
+  factory Course.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data()!;
+    return Course(
+      id: doc.id,
+      name: data['name'] as String,
+      day: (data['day'] as num).toInt(),
+      start: (data['start'] as num).toInt(),
+      end: (data['end'] as num).toInt(),
+    );
+  }
+
 
  
   bool clashesWith(Course other) =>
@@ -104,4 +125,31 @@ List<(int, int)> freeTimes(List<Course> sortedDay) {
     if (c.end > busyUntil) busyUntil = c.end;
   }
   return gaps;
+}
+
+// The signed-in user's courses: users/{uid}/courses
+CollectionReference<Map<String, dynamic>> myCourses() {
+  final uid = FirebaseAuth.instance.currentUser!.uid;
+  return FirebaseFirestore.instance
+      .collection('users')
+      .doc(uid)
+      .collection('courses');
+}
+
+// Sample data, written once when a new account is created.
+Future<void> addSampleCourses() async {
+  const samples = [
+    Course(name: 'Multivariable', day: 0, start: 8 * 60, end: 10 * 60),
+    Course(name: 'ICDL', day: 0, start: 10 * 60, end: 11 * 60 + 30),
+    Course(name: 'MOBILE', day: 1, start: 9 * 60, end: 11 * 60),
+    Course(name: 'WEBTECH', day: 1, start: 10 * 60 + 30, end: 12 * 60),
+    Course(name: 'English', day: 1, start: 14 * 60, end: 15 * 60),
+    Course(name: 'ENTREPRENEURSHIP', day: 3, start: 13 * 60, end: 15 * 60),
+    Course(name: 'Programming', day: 3, start: 8 * 60 + 30, end: 10 * 60),
+  ];
+  final batch = FirebaseFirestore.instance.batch();
+  for (final c in samples) {
+    batch.set(myCourses().doc(), c.toMap());
+  }
+  await batch.commit();
 }
