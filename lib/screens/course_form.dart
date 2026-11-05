@@ -1,30 +1,25 @@
-import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart' show FirebaseException;
-import 'package:progressive_time_picker/progressive_time_picker.dart'
-    show
-        PickedTime,
-        TimePicker,
-        TimePickerDecoration,
-        TimePickerHandlerDecoration,
-        TimePickerSweepDecoration;
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
-import 'course.dart';
+import '../models/course.dart';
+import '../state/week_state.dart';
+import '../utils/schedule.dart';
+import '../widgets/clock.dart';
+import '../widgets/theme.dart';
 
 class CourseForm extends StatefulWidget {
-  final Course? course;  
+  final Course? course;
   final int initialDay;
 
-  const CourseForm({
-    super.key,
-    this.course,
-    required this.initialDay,
-  });
+  const CourseForm({super.key, this.course, required this.initialDay});
 
   @override
   State<CourseForm> createState() => _CourseFormState();
 }
 
 class _CourseFormState extends State<CourseForm> {
+  // Ephemeral state: stays here with setState.
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _name;
   late final TextEditingController _start;
@@ -42,27 +37,11 @@ class _CourseFormState extends State<CourseForm> {
     _start = TextEditingController(text: c == null ? '' : formatTime(c.start));
     _end = TextEditingController(text: c == null ? '' : formatTime(c.end));
     _day = c?.day ?? widget.initialDay;
-    // Typing a valid time moves the clock handles too.
     _start.addListener(_refresh);
     _end.addListener(_refresh);
   }
 
   void _refresh() => setState(() {});
-
-  // The clock shows the typed times; until they are valid it shows 08:00–10:00.
-  int get _pickerStart => parseTime(_start.text) ?? 8 * 60;
-  int get _pickerEnd => parseTime(_end.text) ?? 10 * 60;
-
-  PickedTime _picked(int minutes) =>
-      PickedTime(h: minutes ~/ 60, m: minutes % 60);
-
-  int _minutes(PickedTime t) => (t.h % 24) * 60 + t.m;
-
-   
-  void _onPicked(PickedTime start, PickedTime end, bool? _) {
-    _start.text = formatTime(_minutes(start));
-    _end.text = formatTime(_minutes(end));
-  }
 
   @override
   void dispose() {
@@ -83,71 +62,50 @@ class _CourseFormState extends State<CourseForm> {
     return null;
   }
 
- Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _busy = true);
-    final course = Course(
+  /// Typed course, or null while times are invalid.
+  Course? get _draft {
+    final s = parseTime(_start.text);
+    final e = parseTime(_end.text);
+    if (s == null || e == null || e <= s) return null;
+    return Course(
       id: widget.course?.id ?? '',
       name: _name.text.trim(),
       day: _day,
-      start: parseTime(_start.text)!,
-      end: parseTime(_end.text)!,
+      start: s,
+      end: e,
     );
+  }
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+    // Read before the first await.
+    final week = context.read<WeekState>();
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    final course = _draft!;
     try {
       if (_editing) {
-        await myCourses().doc(course.id).update(course.toMap());
+        await week.edit(widget.course!.id, course);
       } else {
-        await myCourses().add(course.toMap());
+        await week.add(course);
       }
       if (mounted) Navigator.pop(context, course.day);
     } on FirebaseException catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         SnackBar(content: Text('Could not save: ${e.code}')),
       );
     }
   }
 
-
-  Widget _clock(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return TimePicker(
-      initTime: _picked(_pickerStart),
-      endTime: _picked(_pickerEnd),
-      height: 240,
-      width: 240,
-      onSelectionChange: _onPicked,
-      onSelectionEnd: _onPicked,
-      decoration: TimePickerDecoration(
-        baseColor: scheme.surfaceContainerHighest,
-        sweepDecoration: TimePickerSweepDecoration(
-          pickerStrokeWidth: 24,
-          pickerColor: scheme.primary,
-          showConnector: true,
-        ),
-        initHandlerDecoration: TimePickerHandlerDecoration(
-          color: scheme.onPrimary,
-          shape: BoxShape.circle,
-          radius: 10,
-          icon: Icon(Icons.play_arrow, size: 14, color: scheme.primary),
-        ),
-        endHandlerDecoration: TimePickerHandlerDecoration(
-          color: scheme.onPrimary,
-          shape: BoxShape.circle,
-          radius: 10,
-          icon: Icon(Icons.stop, size: 14, color: scheme.primary),
-        ),
-      ),
-      child: Text(
-        '${formatTime(_pickerStart)}–${formatTime(_pickerEnd)}',
-        style: Theme.of(context).textTheme.titleMedium,
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
+    // Step 16: live data from the brain.
+    final week = context.watch<WeekState>();
+    final draft = _draft;
+    final clashes = draft == null ? <Course>[] : week.clashesOf(draft);
+
     return Scaffold(
       appBar: AppBar(title: Text(_editing ? 'Edit course' : 'Add course')),
       body: Form(
@@ -155,13 +113,18 @@ class _CourseFormState extends State<CourseForm> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            _Summary(
+              text: 'Week total: ${formatDuration(week.weekMinutes)} · '
+                  '${week.courses.length} courses',
+              clashes: clashes,
+            ),
+            const SizedBox(height: 16),
             TextFormField(
               controller: _name,
               decoration: const InputDecoration(labelText: 'Course name'),
               textCapitalization: TextCapitalization.words,
-              validator: (v) => (v == null || v.trim().isEmpty)
-                  ? 'Enter a course name'
-                  : null,
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? 'Enter a course name' : null,
             ),
             const SizedBox(height: 16),
             DropdownButtonFormField<int>(
@@ -174,7 +137,7 @@ class _CourseFormState extends State<CourseForm> {
               onChanged: (v) => setState(() => _day = v!),
             ),
             const SizedBox(height: 16),
-            Center(child: _clock(context)),
+            Center(child: Clock(start: _start, end: _end)),
             const SizedBox(height: 16),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -205,9 +168,71 @@ class _CourseFormState extends State<CourseForm> {
               ],
             ),
             const SizedBox(height: 24),
-            FilledButton(onPressed: _save, child: const Text('Save')),
+            FilledButton(
+              onPressed: _busy ? null : _save,
+              child: _busy
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Save'),
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _Summary extends StatelessWidget {
+  const _Summary({required this.text, required this.clashes});
+
+  final String text;
+  final List<Course> clashes;
+
+  @override
+  Widget build(BuildContext context) {
+    final clashing = clashes.isNotEmpty;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: clashing ? const Color(0xFFFDEEEF) : Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: clashing ? clashRed : line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            text,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: ink,
+              fontFeatures: tabular,
+            ),
+          ),
+          if (clashing) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Icon(Icons.warning_amber, size: 18, color: clashRed),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Clashes with ${clashes.map((c) => c.name).join(', ')}',
+                    style: const TextStyle(
+                      color: clashRed,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
       ),
     );
   }
